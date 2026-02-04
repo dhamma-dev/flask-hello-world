@@ -1,51 +1,151 @@
 {% extends "base.html" %}
 {% block title %}Dashboard – Alarm Webhook{% endblock %}
 {% block content %}
-  <h1>Alarm events ({{ total }} total)</h1>
-  <form method="get" action="/">
-    <input name="alarm_id" value="{{ alarm_id_filter }}" placeholder="Filter by alarm ID" size="40">
-    <select name="state">
-      <option value="">All states</option>
-      <option value="RAISED" {{ 'selected' if state_filter == 'RAISED' else '' }}>RAISED</option>
-      <option value="CLEARED" {{ 'selected' if state_filter == 'CLEARED' else '' }}>CLEARED</option>
-    </select>
-    <input type="hidden" name="limit" value="{{ limit }}">
-    <button type="submit">Filter</button>
-  </form>
-  <table>
-    <thead>
-      <tr>
-        <th>Received at</th>
-        <th>Alarm ID</th>
-        <th>State</th>
-        <th>Rule</th>
-        <th>Severity</th>
-        <th>Raised</th>
-        <th>Cleared</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for e in events %}
-      <tr>
-        <td class="muted">{{ e.received_at[:19] if e.received_at else '-' }}</td>
-        <td><a href="/alarm/{{ e.alarm_id or '' }}">{{ (e.alarm_id or '-')[:20] }}{% if e.alarm_id and e.alarm_id|length > 20 %}…{% endif %}</a></td>
-        <td><span class="badge badge-{{ e.state|lower }}">{{ e.state }}</span></td>
-        <td>{{ e.payload.get('rule') or '-' }}</td>
-        <td>{{ e.payload.get('alarmSeverity') or '-' }}</td>
-        <td class="muted">{{ (e.payload.get('raisedTime') or '-')[:19] }}</td>
-        <td class="muted">{{ (e.payload.get('clearedTime') or '-')[:19] }}</td>
-        <td><a href="/event/{{ e.id }}">JSON</a></td>
-      </tr>
-      {% else %}
-      <tr><td colspan="8" class="muted">No events yet. POST to /webhook/alarms to add some.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% if events and (offset > 0 or (events|length) == limit) %}
-  <p class="muted">
-    {% if offset > 0 %}<a href="?alarm_id={{ alarm_id_filter }}&state={{ state_filter }}&limit={{ limit }}&offset={{ [0, offset - limit]|max }}">← Newer</a>{% endif %}
-    {% if (events|length) == limit %}<a href="?alarm_id={{ alarm_id_filter }}&state={{ state_filter }}&limit={{ limit }}&offset={{ offset + limit }}">Older →</a>{% endif %}
-  </p>
-  {% endif %}
+  <div id="dashboard" data-alarm-id="{{ alarm_id_filter }}" data-state="{{ state_filter }}" data-limit="{{ limit }}" data-offset="{{ offset }}">
+    <h1>Alarm events (<span id="total-count">{{ total }}</span> total)</h1>
+    <p class="muted" style="margin-bottom: 0.5rem;">
+      <label>
+        <input type="checkbox" id="pause-refresh" autocomplete="off">
+        Pause auto-refresh
+      </label>
+      <span id="refresh-status" class="muted"></span>
+    </p>
+    <form method="get" action="/">
+      <input name="alarm_id" value="{{ alarm_id_filter }}" placeholder="Filter by alarm ID" size="40">
+      <select name="state">
+        <option value="">All states</option>
+        <option value="RAISED" {{ 'selected' if state_filter == 'RAISED' else '' }}>RAISED</option>
+        <option value="CLEARED" {{ 'selected' if state_filter == 'CLEARED' else '' }}>CLEARED</option>
+      </select>
+      <input type="hidden" name="limit" value="{{ limit }}">
+      <button type="submit">Filter</button>
+    </form>
+    <table>
+      <thead>
+        <tr>
+          <th>Received at</th>
+          <th>Alarm ID</th>
+          <th>State</th>
+          <th>Rule</th>
+          <th>Severity</th>
+          <th>Raised</th>
+          <th>Cleared</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="events-tbody">
+        {% for e in events %}
+        <tr>
+          <td class="muted">{{ e.received_at[:19] if e.received_at else '-' }}</td>
+          <td><a href="/alarm/{{ e.alarm_id or '' }}">{{ (e.alarm_id or '-')[:20] }}{% if e.alarm_id and e.alarm_id|length > 20 %}…{% endif %}</a></td>
+          <td><span class="badge badge-{{ e.state|lower }}">{{ e.state }}</span></td>
+          <td>{{ e.payload.get('rule') or '-' }}</td>
+          <td>{{ e.payload.get('alarmSeverity') or '-' }}</td>
+          <td class="muted">{{ (e.payload.get('raisedTime') or '-')[:19] }}</td>
+          <td class="muted">{{ (e.payload.get('clearedTime') or '-')[:19] }}</td>
+          <td><a href="/event/{{ e.id }}">JSON</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="muted">No events yet. POST to /webhook/alarms to add some.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if events and (offset > 0 or (events|length) == limit) %}
+    <p class="muted" id="pagination">
+      {% if offset > 0 %}<a href="?alarm_id={{ alarm_id_filter }}&state={{ state_filter }}&limit={{ limit }}&offset={{ [0, offset - limit]|max }}">← Newer</a>{% endif %}
+      {% if (events|length) == limit %}<a href="?alarm_id={{ alarm_id_filter }}&state={{ state_filter }}&limit={{ limit }}&offset={{ offset + limit }}">Older →</a>{% endif %}
+    </p>
+    {% endif %}
+  </div>
+  <script>
+    (function () {
+      var REFRESH_INTERVAL_MS = 5000;
+      var el = document.getElementById('dashboard');
+      var tbody = document.getElementById('events-tbody');
+      var totalCount = document.getElementById('total-count');
+      var pauseCheckbox = document.getElementById('pause-refresh');
+      var statusEl = document.getElementById('refresh-status');
+
+      function buildRow(e) {
+        var aid = e.alarm_id || '';
+        var aidDisplay = (e.alarm_id || '-').substring(0, 20) + ((e.alarm_id && e.alarm_id.length > 20) ? '\u2026' : '');
+        var recv = e.received_at ? e.received_at.substring(0, 19) : '-';
+        var state = e.state || '';
+        var stateClass = state.toLowerCase();
+        var rule = (e.payload && e.payload.rule) || '-';
+        var sev = (e.payload && e.payload.alarmSeverity) || '-';
+        var raised = (e.payload && e.payload.raisedTime) ? e.payload.raisedTime.substring(0, 19) : '-';
+        var cleared = (e.payload && e.payload.clearedTime) ? e.payload.clearedTime.substring(0, 19) : '-';
+        return '<tr>' +
+          '<td class="muted">' + recv + '</td>' +
+          '<td><a href="/alarm/' + escapeHtml(aid) + '">' + escapeHtml(aidDisplay) + '</a></td>' +
+          '<td><span class="badge badge-' + stateClass + '">' + escapeHtml(state) + '</span></td>' +
+          '<td>' + escapeHtml(rule) + '</td>' +
+          '<td>' + escapeHtml(sev) + '</td>' +
+          '<td class="muted">' + escapeHtml(raised) + '</td>' +
+          '<td class="muted">' + escapeHtml(cleared) + '</td>' +
+          '<td><a href="/event/' + escapeHtml(e.id) + '">JSON</a></td>' +
+          '</tr>';
+      }
+      function escapeHtml(s) {
+        if (s == null) return '';
+        var div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      function buildEmptyRow() {
+        return '<tr><td colspan="8" class="muted">No events yet. POST to /webhook/alarms to add some.</td></tr>';
+      }
+
+      function apiUrl() {
+        var params = new URLSearchParams();
+        if (el.dataset.alarmId) params.set('alarm_id', el.dataset.alarmId);
+        if (el.dataset.state) params.set('state', el.dataset.state);
+        params.set('limit', el.dataset.limit || '100');
+        params.set('offset', el.dataset.offset || '0');
+        return '/api/events?' + params.toString();
+      }
+
+      function refresh() {
+        if (pauseCheckbox && pauseCheckbox.checked) return;
+        if (statusEl) statusEl.textContent = 'Updating…';
+        fetch(apiUrl(), { credentials: 'same-origin' })
+          .then(function (r) { return r.ok ? r.json() : Promise.reject(r); })
+          .then(function (data) {
+            totalCount.textContent = data.total;
+            if (!data.events || data.events.length === 0) {
+              tbody.innerHTML = buildEmptyRow();
+            } else {
+              tbody.innerHTML = data.events.map(buildRow).join('');
+            }
+            if (statusEl) statusEl.textContent = '';
+          })
+          .catch(function () {
+            if (statusEl) statusEl.textContent = 'Update failed';
+          });
+      }
+
+      var intervalId = setInterval(refresh, REFRESH_INTERVAL_MS);
+      function setPaused(paused) {
+        if (paused) {
+          clearInterval(intervalId);
+          intervalId = null;
+        } else {
+          if (!intervalId) intervalId = setInterval(refresh, REFRESH_INTERVAL_MS);
+        }
+      }
+      if (pauseCheckbox) {
+        pauseCheckbox.addEventListener('change', function () { setPaused(pauseCheckbox.checked); });
+      }
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) {
+          clearInterval(intervalId);
+          intervalId = null;
+        } else if (!pauseCheckbox.checked) {
+          if (!intervalId) intervalId = setInterval(refresh, REFRESH_INTERVAL_MS);
+        }
+      });
+    })();
+  </script>
 {% endblock %}

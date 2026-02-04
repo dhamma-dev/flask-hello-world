@@ -1,11 +1,15 @@
-from flask import Flask, request, jsonify, render_template
+import os
 
+from flask import Flask, request, jsonify, render_template, redirect, url_for, session
+
+from auth import verify_user, login_required
 from storage import store
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-in-production")
 
 
-# ---------- Webhook ----------
+# ---------- Webhook (no auth so monitoring can POST) ----------
 
 @app.route("/webhook/alarms", methods=["POST"])
 def webhook_alarms():
@@ -29,9 +33,31 @@ def webhook_health():
     return jsonify({"ok": True}), 200
 
 
-# ---------- Dashboard ----------
+# ---------- Auth ----------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "GET":
+        return render_template("login.html", next=request.args.get("next"))
+    username = (request.form.get("username") or "").strip()
+    password = request.form.get("password") or ""
+    next_url = request.form.get("next") or url_for("index")
+    if not username or not verify_user(username, password):
+        return render_template("login.html", error="Invalid username or password", next=next_url), 401
+    session["user"] = username
+    return redirect(next_url)
+
+
+@app.route("/logout")
+def logout():
+    session.pop("user", None)
+    return redirect(url_for("login"))
+
+
+# ---------- Dashboard (login required) ----------
 
 @app.route("/")
+@login_required
 def index():
     """Dashboard: list alarm events with optional filters."""
     alarm_id = request.args.get("alarm_id", "").strip() or None
@@ -56,7 +82,31 @@ def index():
     )
 
 
+@app.route("/api/events")
+@login_required
+def api_events():
+    """JSON list of events for dashboard live refresh. Same query params as index."""
+    alarm_id = request.args.get("alarm_id", "").strip() or None
+    state = request.args.get("state", "").strip() or None
+    try:
+        limit = min(int(request.args.get("limit", 100)), 500)
+    except ValueError:
+        limit = 100
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        offset = 0
+    events = store.get_events(alarm_id=alarm_id, state=state, limit=limit, offset=offset)
+    return jsonify({
+        "events": events,
+        "total": store.count(),
+        "limit": limit,
+        "offset": offset,
+    })
+
+
 @app.route("/event/<event_id>")
+@login_required
 def event_detail(event_id):
     """Single event: full JSON payload."""
     event = store.get_event_by_id(event_id)
@@ -66,6 +116,7 @@ def event_detail(event_id):
 
 
 @app.route("/alarm/<alarm_id>")
+@login_required
 def alarm_pair(alarm_id):
     """All events for one alarm_id (RAISED + CLEARED pairing)."""
     events = store.get_events_by_alarm_id(alarm_id)
