@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Dashboard – Alarm Webhook{% endblock %}
+{% block content %}
+  <h1>Alarm events ({{ total }} total)</h1>
+  <form method="get" action="/">
+    <input name="alarm_id" value="{{ alarm_id_filter }}" placeholder="Filter by alarm ID" size="40">
+    <select name="state">
+      <option value="">All states</option>
+      <option value="RAISED" {{ 'selected' if state_filter == 'RAISED' else '' }}>RAISED</option>
+      <option value="CLEARED" {{ 'selected' if state_filter == 'CLEARED' else '' }}>CLEARED</option>
+    </select>
+    <input type="hidden" name="limit" value="{{ limit }}">
+    <button type="submit">Filter</button>
+  </form>
+  <table>
+    <thead>
+      <tr>
+        <th>Received at</th>
+        <th>Alarm ID</th>
+        <th>State</th>
+        <th>Rule</th>
+        <th>Severity</th>
+        <th>Raised</th>
+        <th>Cleared</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in events %}
+      <tr>
+        <td class="muted">{{ e.received_at[:19] if e.received_at else '-' }}</td>
+        <td><a href="/alarm/{{ e.alarm_id }}">{{ e.alarm_id[:20] }}{% if e.alarm_id and e.alarm_id|length > 20 %}…{% endif %}</a></td>
+        <td><span class="badge badge-{{ e.state|lower }}">{{ e.state }}</span></td>
+        <td>{{ e.payload.get('rule') or '-' }}</td>
+        <td>{{ e.payload.get('alarmSeverity') or '-' }}</td>
+        <td class="muted">{{ (e.payload.get('raisedTime') or '-')[:19] }}</td>
+        <td class="muted">{{ (e.payload.get('clearedTime') or '-')[:19] }}</td>
+        <td><a href="/event/{{ e.id }}">JSON</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="muted">No events yet. POST to /webhook/alarms to add some.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if events and (offset > 0 or (events|length) == limit) %}
+  <p class="muted">
+    {% if offset > 0 %}<a href="?alarm_id={{ alarm_id_filter }}&state={{ state_filter }}&limit={{ limit }}&offset={{ [0, offset - limit]|max }}">← Newer</a>{% endif %}
+    {% if (events|length) == limit %}<a href="?alarm_id={{ alarm_id_filter }}&state={{ state_filter }}&limit={{ limit }}&offset={{ offset + limit }}">Older →</a>{% endif %}
+  </p>
+  {% endif %}
+{% endblock %}
