@@ -104,4 +104,4 @@ venv.bak/
 .mypy_cache/
 
 # Local users file (passwords); use scripts/add_user.py to create
-users.txt
+
